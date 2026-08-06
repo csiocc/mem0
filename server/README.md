@@ -119,6 +119,66 @@ through `OLLAMA_IMAGE`; update that value explicitly when testing an upgrade.
 - Auth is enabled by default.
 - `AUTH_DISABLED=true` exists for local development only and should not be used in production.
 
+## Private memory scopes and imports
+
+Every normal memory operation is bound to the user behind the personal API key:
+
+- The personal API key determines the memory owner. Callers never send
+  `user_id`; supplying one is rejected with `400`.
+- Each memory lives in one scope: `global` (private, across the user's
+  projects) or `project:<project_id>`. Project searches and listings return
+  that user's global memories plus the selected project's memories. Global
+  searches exclude project memories.
+- Get, update, history and delete verify ownership first; foreign memory IDs
+  return `404`.
+- Two users with the same `project_id` have fully separate namespaces.
+
+Source imports are resumable and idempotent through a relational ledger:
+
+```text
+POST /memory-imports                          # begin or resume one source file
+POST /memory-imports/{import_id}/memories     # append extracted memories
+POST /memory-imports/{import_id}/complete     # mark the source completed
+```
+
+Begin request shape:
+
+```json
+{
+  "source_ref": "docs/old-memory.md",
+  "source_sha256": "<sha256 of the complete file>",
+  "scope": "project",
+  "project_id": "LernendeLab"
+}
+```
+
+Append request shape:
+
+```json
+{
+  "memories": [
+    {"text": "The project uses local Ollama embeddings.", "source_section": "Architecture"}
+  ]
+}
+```
+
+Import behavior:
+
+- Import always stores memories with `infer=false`; the server makes no
+  Anthropic call for imports.
+- Embeddings are generated locally by the configured Ollama model.
+- A completed unchanged source (`user + scope + source_ref + sha256`) returns
+  `state: "unchanged"`; an incomplete one resumes with the same import ID.
+- A changed source creates a new append-only import record. Exact duplicate
+  memory texts within the same user and scope are skipped; old memories are
+  never updated or deleted automatically.
+- Completion is rejected (`409`) while unresolved failures remain.
+- There is no configured total limit on file count, bytes or memories.
+
+Memories created before the multi-user scoping carry no owner. Administrators
+must explicitly assign or migrate those legacy memories before enabling
+multi-user access; the server does not guess an owner.
+
 ## Forgotten password
 
 Reset an admin password from the host while the stack is running:
