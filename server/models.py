@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -60,6 +60,50 @@ class RefreshTokenJti(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class MemoryImportSource(Base):
+    __tablename__ = "memory_import_sources"
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('global', 'project')",
+            name="ck_memory_import_sources_scope",
+        ),
+        CheckConstraint(
+            "status IN ('in_progress', 'completed', 'failed')",
+            name="ck_memory_import_sources_status",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "scope_key",
+            "source_ref",
+            "source_sha256",
+            name="uq_memory_import_sources_identity",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    scope: Mapped[str] = mapped_column(String(20))
+    project_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scope_key: Mapped[str] = mapped_column(String(300))
+    source_ref: Mapped[str] = mapped_column(String(1024))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="in_progress")
+    stored_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class Settings(Base):
