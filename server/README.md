@@ -17,7 +17,7 @@ Copy the example env file and set a Postgres password (required):
 ```bash
 cd server
 cp .env.example .env
-# Edit .env — at minimum set POSTGRES_PASSWORD and OPENAI_API_KEY
+# Edit .env — at minimum set POSTGRES_PASSWORD and ANTHROPIC_API_KEY
 ```
 
 ### Agent-first
@@ -69,6 +69,48 @@ make up
 ```
 
 Then open `http://localhost:3000` and complete the setup wizard.
+
+## Anthropic and local embeddings
+
+This server build permits Anthropic as its only LLM provider and Ollama as its
+only embedder provider. OpenAI, Gemini, and remote embedding providers are not
+accepted by the configuration API.
+
+The models and embedding dimensions can be selected in `.env`:
+
+| Variable | Default |
+|---|---|
+| `MEM0_DEFAULT_LLM_MODEL` | `claude-haiku-4-5-20251001` |
+| `MEM0_DEFAULT_EMBEDDER_MODEL` | `nomic-embed-text` |
+| `MEM0_EMBEDDING_DIMS` | `768` |
+
+Set `ANTHROPIC_API_KEY` for the LLM. Embeddings are generated locally by the
+Ollama service and require no external API key.
+
+`MEM0_EMBEDDING_DIMS` must match the selected embedding model. It also configures
+the pgvector collection, so do not change it for a collection that already
+contains vectors.
+
+Configure the models in `.env`:
+
+```dotenv
+ANTHROPIC_API_KEY=<your-anthropic-api-key>
+MEM0_DEFAULT_LLM_MODEL=claude-haiku-4-5-20251001
+MEM0_DEFAULT_EMBEDDER_MODEL=nomic-embed-text
+MEM0_EMBEDDING_DIMS=768
+```
+
+Start the stack:
+
+```bash
+cd server
+docker compose up -d --build
+```
+
+The `ollama-pull` initialization service downloads the configured embedding
+model before the API starts. Downloaded models are stored in the `ollama_data`
+volume. The Ollama port is not published to the host. The Ollama image is pinned
+through `OLLAMA_IMAGE`; update that value explicitly when testing an upgrade.
 
 ## Security Defaults
 
