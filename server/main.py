@@ -2,10 +2,10 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import telemetry
-from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, verify_auth
+from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, require_auth, verify_auth
 from db import SessionLocal
 from dotenv import load_dotenv
 from errors import (
@@ -19,6 +19,14 @@ from errors import (
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from memory_scope import (
+    RESERVED_SCOPE_METADATA,
+    ScopeError,
+    bind_memory_metadata,
+    build_read_filter,
+    memory_owner_id,
+    resolve_scope,
+)
 from models import RequestLog, User
 from pydantic import BaseModel, Field
 from rate_limit import limiter
@@ -193,9 +201,12 @@ class Message(BaseModel):
 
 class MemoryCreate(BaseModel):
     messages: List[Message] = Field(..., description="List of messages to store.")
-    user_id: Optional[str] = None
-    agent_id: Optional[str] = None
-    run_id: Optional[str] = None
+    user_id: Optional[str] = Field(
+        None,
+        description="Rejected for user-scoped access; identity comes from authentication.",
+    )
+    scope: Literal["global", "project"] = "project"
+    project_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     expiration_date: Optional[str] = Field(None, description="Expiration date in YYYY-MM-DD format.")
     infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
@@ -211,10 +222,12 @@ class MemoryUpdate(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query.")
-    user_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
-    run_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
-    agent_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
-    filters: Optional[Dict[str, Any]] = None
+    user_id: Optional[str] = Field(
+        None,
+        description="Rejected for user-scoped access; identity comes from authentication.",
+    )
+    scope: Literal["global", "project"] = "project"
+    project_id: Optional[str] = None
     top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     explain: Optional[bool] = Field(None, description="Include score details for each search result.")
@@ -223,6 +236,25 @@ class SearchRequest(BaseModel):
 
 class GenerateInstructionsRequest(BaseModel):
     use_case: str = Field(..., description="Description of what the user will use Mem0 for.")
+
+
+def _authenticated_user_id(user: User) -> str:
+    return str(user.id)
+
+
+def _reject_client_user_id(user_id: str | None) -> None:
+    if user_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is derived from authentication and must not be supplied.",
+        )
+
+
+def _owned_memory_or_404(memory_id: str, user: User) -> Dict[str, Any]:
+    memory = get_memory_instance().get(memory_id)
+    if not memory or memory_owner_id(memory) != _authenticated_user_id(user):
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return memory
 
 
 def _client_error(exc: Exception) -> HTTPException:
@@ -379,75 +411,63 @@ def generate_instructions(req: GenerateInstructionsRequest, _auth=Depends(verify
 
 
 @app.post("/memories", summary="Create memories")
-def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
-    """Store new memories."""
-    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
-        raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
-
-    params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
+def add_memory(memory_create: MemoryCreate, user: User = Depends(require_auth)):
+    """Store new memories bound to the authenticated user."""
+    _reject_client_user_id(memory_create.user_id)
     try:
-        response = get_memory_instance().add(messages=[m.model_dump() for m in memory_create.messages], **params)
+        target = resolve_scope(memory_create.scope, memory_create.project_id)
+        metadata = bind_memory_metadata(
+            user_id=_authenticated_user_id(user),
+            target=target,
+            metadata=memory_create.metadata,
+        )
+        excluded = {"messages", "user_id", "scope", "project_id", "metadata"}
+        params = {
+            key: value
+            for key, value in memory_create.model_dump().items()
+            if value is not None and key not in excluded
+        }
+        response = get_memory_instance().add(
+            messages=[message.model_dump() for message in memory_create.messages],
+            user_id=_authenticated_user_id(user),
+            metadata=metadata,
+            **params,
+        )
         if response.get("results"):
             telemetry.log_dashboard_nudge_once(DASHBOARD_URL)
         return JSONResponse(content=response)
-    except (ValueError, Mem0ValidationError) as e:
-        raise _client_error(e)
+    except ScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ValueError, Mem0ValidationError) as exc:
+        raise _client_error(exc)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at", "expiration_date"}
-
-
-def _serialize_memory(row: Any) -> Dict[str, Any]:
-    payload = getattr(row, "payload", None) or {}
-    return {
-        "id": getattr(row, "id", None),
-        "memory": payload.get("data"),
-        "user_id": payload.get("user_id"),
-        "agent_id": payload.get("agent_id"),
-        "run_id": payload.get("run_id"),
-        "hash": payload.get("hash"),
-        "expiration_date": payload.get("expiration_date"),
-        "metadata": {k: v for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS},
-        "created_at": payload.get("created_at"),
-        "updated_at": payload.get("updated_at"),
-    }
-
-
-def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    results = get_memory_instance().vector_store.list(top_k=limit)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
-    return {"results": [_serialize_memory(row) for row in rows]}
 
 
 @app.get("/memories", summary="Get memories")
 def get_all_memories(
-    request: Request,
-    user_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
+    scope: Literal["global", "project"] = "project",
+    project_id: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
-    _auth=Depends(verify_auth),
+    user: User = Depends(require_auth),
 ):
-    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only)."""
+    """List the authenticated user's memories in the requested scope."""
     try:
-        if not any([user_id, run_id, agent_id]):
-            auth_type = getattr(request.state, "auth_type", "none")
-            if _auth is not None and _auth.role != "admin" and auth_type not in {"admin_api_key", "disabled"}:
-                raise HTTPException(status_code=403, detail="Admin role required to list all memories.")
-            # Admin all-memory listing is intentionally raw; scoped get_all below applies expiry visibility.
-            return _list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
-        filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
-        }
-        params = {"filters": filters}
-        if top_k is not None:
-            params["top_k"] = top_k
-        params["show_expired"] = show_expired
-        return get_memory_instance().get_all(**params)
+        target = resolve_scope(scope, project_id)
+        filters = build_read_filter(_authenticated_user_id(user), target)
+        return get_memory_instance().get_all(
+            filters=filters,
+            top_k=top_k if top_k is not None else 20,
+            show_expired=show_expired,
+        )
+    except ScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except HTTPException:
         raise
     except Exception:
@@ -455,31 +475,23 @@ def get_all_memories(
 
 
 @app.get("/memories/{memory_id}", summary="Get a memory")
-def get_memory(memory_id: str, _auth=Depends(verify_auth)):
-    """Retrieve a specific memory by ID."""
+def get_memory(memory_id: str, user: User = Depends(require_auth)):
+    """Retrieve a specific owned memory by ID."""
     try:
-        return get_memory_instance().get(memory_id)
+        return _owned_memory_or_404(memory_id, user)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.post("/search", summary="Search memories")
-def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
-    """Search for memories based on a query."""
+def search_memories(search_req: SearchRequest, user: User = Depends(require_auth)):
+    """Search the authenticated user's memories based on a query."""
+    _reject_client_user_id(search_req.user_id)
     try:
-        filters = search_req.filters or {}
-        deprecated_keys = []
-        for entity_key in ("user_id", "agent_id", "run_id"):
-            entity_val = getattr(search_req, entity_key, None)
-            if entity_val:
-                filters[entity_key] = entity_val
-                deprecated_keys.append(entity_key)
-        if deprecated_keys:
-            logging.warning(
-                "Top-level %s in /search is deprecated. Use filters={%s} instead.",
-                ", ".join(deprecated_keys),
-                ", ".join(f'"{k}": "..."' for k in deprecated_keys),
-            )
+        target = resolve_scope(search_req.scope, search_req.project_id)
+        filters = build_read_filter(_authenticated_user_id(user), target)
         params = {}
         if search_req.top_k is not None:
             params["top_k"] = search_req.top_k
@@ -490,6 +502,8 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
         if search_req.show_expired is not None:
             params["show_expired"] = search_req.show_expired
         return get_memory_instance().search(query=search_req.query, filters=filters, **params)
+    except ScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -499,41 +513,61 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
 
 
 @app.put("/memories/{memory_id}", summary="Update a memory")
-def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(verify_auth)):
-    """Update an existing memory."""
+def update_memory(
+    memory_id: str,
+    updated_memory: MemoryUpdate,
+    user: User = Depends(require_auth),
+):
+    """Update an existing owned memory without changing ownership or scope."""
     try:
-        fields_set = getattr(updated_memory, "model_fields_set", getattr(updated_memory, "__fields_set__", set()))
+        _owned_memory_or_404(memory_id, user)
+        fields_set = updated_memory.model_fields_set
         params = {"memory_id": memory_id}
         if "text" in fields_set:
             params["data"] = updated_memory.text
         if "metadata" in fields_set:
-            params["metadata"] = updated_memory.metadata
+            metadata = updated_memory.metadata or {}
+            reserved = set(metadata).intersection(RESERVED_SCOPE_METADATA)
+            if reserved:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Ownership and scope metadata cannot be updated.",
+                )
+            params["metadata"] = metadata
         if "expiration_date" in fields_set:
             params["expiration_date"] = updated_memory.expiration_date
         return get_memory_instance().update(**params)
-    except (ValueError, Mem0ValidationError) as e:
-        raise _client_error(e)
+    except (ValueError, Mem0ValidationError) as exc:
+        raise _client_error(exc)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.get("/memories/{memory_id}/history", summary="Get memory history")
-def memory_history(memory_id: str, _auth=Depends(verify_auth)):
-    """Retrieve memory history."""
+def memory_history(memory_id: str, user: User = Depends(require_auth)):
+    """Retrieve the history of an owned memory."""
     try:
+        _owned_memory_or_404(memory_id, user)
         return get_memory_instance().history(memory_id=memory_id)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.delete("/memories/{memory_id}", summary="Delete a memory", response_model=MessageResponse)
-def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
-    """Delete a specific memory by ID."""
+def delete_memory(memory_id: str, user: User = Depends(require_auth)):
+    """Delete a specific owned memory by ID."""
     try:
+        _owned_memory_or_404(memory_id, user)
         get_memory_instance().delete(memory_id=memory_id)
         return MessageResponse(message="Memory deleted successfully")
-    except (ValueError, Mem0ValidationError) as e:
-        raise _client_error(e)
+    except (ValueError, Mem0ValidationError) as exc:
+        raise _client_error(exc)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
