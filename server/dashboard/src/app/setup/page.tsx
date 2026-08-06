@@ -277,7 +277,7 @@ export default function SetupPage() {
         headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
         body: JSON.stringify({
           messages: [{ role: "user", content: testMessage }],
-          user_id: "setup-test",
+          scope: "global",
         }),
       });
 
@@ -719,7 +719,7 @@ export default function SetupPage() {
                   <pre className="text-xs bg-surface-default-secondary p-3 rounded font-mono overflow-x-auto">{`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: ${apiKey}" \\
   -H "Content-Type: application/json" \\
-  -d '{"messages": [{"role": "user", "content": "${testMessage}"}], "user_id": "setup-test"}'`}</pre>
+  -d '{"messages": [{"role": "user", "content": "${testMessage}"}], "scope": "global"}'`}</pre>
                 </div>
                 {!testSuccess ? (
                   <>

@@ -30,8 +30,14 @@ const PAGE_SIZE = 20;
 // Keep in sync with ALL_MEMORIES_LIMIT in server/main.py.
 const MEMORY_FETCH_LIMIT = 1000;
 
+function scopeLabel(memory: Memory): string {
+  const key = memory.metadata?.["scope_key"];
+  if (typeof key !== "string" || key.length === 0) return "--";
+  return key === "global" ? "global" : key.replace(/^project:/, "");
+}
+
 export default function MemoriesPage() {
-  const [userId, setUserId] = useState("");
+  const [projectId, setProjectId] = useState("");
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
@@ -43,10 +49,12 @@ export default function MemoriesPage() {
     refetch,
   } = useApiQuery<Memory[]>(
     async () => {
-      const params = userId.trim()
-        ? { user_id: userId.trim(), top_k: MEMORY_FETCH_LIMIT }
-        : { top_k: MEMORY_FETCH_LIMIT };
-      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
+      const scopeParams = projectId.trim()
+        ? { scope: "project", project_id: projectId.trim() }
+        : { scope: "global" };
+      const res = await api.get(MEMORY_ENDPOINTS.BASE, {
+        params: { ...scopeParams, top_k: MEMORY_FETCH_LIMIT },
+      });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },
@@ -85,8 +93,14 @@ export default function MemoriesPage() {
         <span className="line-clamp-2 text-sm">{value}</span>
       ),
     },
-    { key: "user_id" as keyof Memory, label: "User", width: 100 },
-    { key: "agent_id" as keyof Memory, label: "Agent", width: 100 },
+    {
+      key: "id" as keyof Memory,
+      label: "Scope",
+      width: 140,
+      render: (_: string, row: Memory) => (
+        <span className="text-sm">{scopeLabel(row)}</span>
+      ),
+    },
     {
       key: "created_at" as keyof Memory,
       label: "Created",
@@ -98,7 +112,7 @@ export default function MemoriesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold font-fustat">Memories</h1>
+      <h1 className="text-xl font-semibold font-fustat">My Memories</h1>
 
       {memories.length >= MEMORY_FETCH_LIMIT && (
         <UpgradeBanner
@@ -110,33 +124,39 @@ export default function MemoriesPage() {
         />
       )}
 
-      <div className="flex gap-3">
-        <Input
-          placeholder="Filter by User ID (optional)"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setPage(0);
-              refetch();
-            }
-          }}
-          className="w-64"
-        />
+      <div className="space-y-1">
+        <div className="flex gap-3">
+          <Input
+            placeholder="Project ID (optional)"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setPage(0);
+                refetch();
+              }
+            }}
+            className="w-64"
+          />
+        </div>
+        <p className="text-xs text-onSurface-default-tertiary">
+          Empty shows your global memories; a project ID shows your global plus
+          that project&apos;s memories. Press Enter to apply.
+        </p>
       </div>
 
       {isLoading ? (
-        <TableSkeleton rows={5} columns={4} />
+        <TableSkeleton rows={5} columns={3} />
       ) : memories.length === 0 ? (
         <EmptyState
           title="No memories yet"
-          description="Create your first memory by sending a POST /memories request."
+          description="Create your first memory by sending a POST /memories request with your personal API key."
         >
           <pre className="text-xs text-left bg-surface-default-secondary p-3 rounded font-mono overflow-x-auto mt-3 max-w-lg">
             {`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: <your-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "alice"}'`}
+  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "scope": "global"}'`}
           </pre>
           <a
             href="https://docs.mem0.ai/open-source/features/rest-api#memory-operations"
@@ -222,22 +242,12 @@ export default function MemoriesPage() {
                     {selectedMemory.id}
                   </p>
                 </div>
-                {selectedMemory.user_id && (
-                  <div className="space-y-1">
-                    <Label className="text-xs text-onSurface-default-tertiary">
-                      User
-                    </Label>
-                    <p className="text-sm">{selectedMemory.user_id}</p>
-                  </div>
-                )}
-                {selectedMemory.agent_id && (
-                  <div className="space-y-1">
-                    <Label className="text-xs text-onSurface-default-tertiary">
-                      Agent
-                    </Label>
-                    <p className="text-sm">{selectedMemory.agent_id}</p>
-                  </div>
-                )}
+                <div className="space-y-1">
+                  <Label className="text-xs text-onSurface-default-tertiary">
+                    Scope
+                  </Label>
+                  <p className="text-sm">{scopeLabel(selectedMemory)}</p>
+                </div>
                 {selectedMemory.created_at && (
                   <div className="space-y-1">
                     <Label className="text-xs text-onSurface-default-tertiary">

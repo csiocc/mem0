@@ -3,6 +3,7 @@ export interface Memory {
   memory: string;
   user_id?: string;
   agent_id?: string;
+  metadata?: Record<string, unknown> | null;
   created_at?: string;
   updated_at?: string;
 }
