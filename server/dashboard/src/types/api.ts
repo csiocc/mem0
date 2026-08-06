@@ -23,6 +23,14 @@ export interface ApiKeyCreateResponse {
   created_at: string;
 }
 
+export interface AccountUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  created_at: string;
+}
+
 export interface ApiRequestLog {
   id: string;
   created_at: string;

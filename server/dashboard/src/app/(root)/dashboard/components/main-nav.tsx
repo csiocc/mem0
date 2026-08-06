@@ -35,12 +35,14 @@ import {
 } from "@/components/ui/sidebar";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/use-auth";
 
 export function MainNav({
   className,
   ...props
 }: React.HTMLAttributes<HTMLElement>) {
   const pathname = usePathname();
+  const { isAdmin } = useAuth();
   const isSidebarCollapsed = useSelector(
     (state: RootState) => state.layout.isSidebarCollapsed,
   );
@@ -209,6 +211,16 @@ export function MainNav({
                     icon: Wrench,
                     active: pathname === "/dashboard/configuration",
                   },
+                  ...(isAdmin
+                    ? [
+                        {
+                          title: "Users",
+                          url: "/dashboard/users",
+                          icon: Users,
+                          active: pathname === "/dashboard/users",
+                        },
+                      ]
+                    : []),
                   {
                     title: "Settings",
                     url: "/dashboard/settings",

@@ -35,6 +35,7 @@ from routers import auth as auth_router
 from routers import entities as entities_router
 from routers import memory_imports as memory_imports_router
 from routers import requests as requests_router
+from routers import users as users_router
 from schemas import MessageResponse
 from server_state import (
     get_current_config,
@@ -194,6 +195,7 @@ app.include_router(api_keys_router.router)
 app.include_router(entities_router.router)
 app.include_router(memory_imports_router.router)
 app.include_router(requests_router.router)
+app.include_router(users_router.router)
 
 
 class Message(BaseModel):

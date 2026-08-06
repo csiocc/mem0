@@ -144,6 +144,13 @@ class TestUnauthenticatedRejection:
         schema = self.client.get("/openapi.json").json()
         assert "Authentication" in schema.get("info", {}).get("description", "")
 
+    def test_user_provisioning_routes_are_registered(self):
+        """Auth enforcement for /users is covered in test_users_router; here we
+        only prove server.main registers the router."""
+        paths = self.client.get("/openapi.json").json()["paths"]
+        assert "get" in paths["/users"]
+        assert "post" in paths["/users"]
+
 
 # ---------------------------------------------------------------------------
 # Legacy ADMIN_API_KEY resolves to the default server user

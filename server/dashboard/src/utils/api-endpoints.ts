@@ -23,6 +23,10 @@ export const API_KEY_ENDPOINTS = {
   BY_ID: (keyId: string) => `/api-keys/${keyId}`,
 } as const;
 
+export const USER_ENDPOINTS = {
+  BASE: "/users",
+} as const;
+
 export const REQUEST_ENDPOINTS = {
   BASE: "/requests",
 } as const;
