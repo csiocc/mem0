@@ -1081,6 +1081,61 @@ class TestProcessMetadataFiltersMerge:
         assert result == {"status": "pending"}
 
 
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+class TestGetAllTranslatesOrFilter:
+    """get_all must translate a top-level OR filter to $or, like search() already does.
+
+    Regression test for the central-mcp-spike finding: build_read_filter's project/global
+    merge filter ({"OR": [...]}) reached the vector store untranslated through get_all,
+    so pgvector's list() treated "OR" as a literal metadata key and matched nothing.
+    """
+
+    def test_sync_get_all_translates_or_to_dollar_or(
+        self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+    ):
+        mock_embedder_factory.return_value = MagicMock()
+        mock_vector_store = MagicMock()
+        mock_vector_store.list.return_value = ([],)
+        mock_vector_factory.return_value = mock_vector_store
+        mock_llm_factory.return_value = MagicMock()
+        mock_sqlite.return_value = MagicMock()
+
+        memory = Memory(MemoryConfig())
+        memory.get_all(filters={
+            "user_id": "u1",
+            "OR": [{"scope_key": "global"}, {"scope_key": "project:occ"}],
+        })
+
+        called_filters = mock_vector_store.list.call_args.kwargs["filters"]
+        assert "OR" not in called_filters
+        assert called_filters["$or"] == [{"scope_key": "global"}, {"scope_key": "project:occ"}]
+
+    @pytest.mark.asyncio
+    async def test_async_get_all_translates_or_to_dollar_or(
+        self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+    ):
+        mock_embedder_factory.return_value = MagicMock()
+        mock_vector_store = MagicMock()
+        mock_vector_store.list.return_value = ([],)
+        mock_vector_factory.return_value = mock_vector_store
+        mock_llm_factory.return_value = MagicMock()
+        mock_sqlite.return_value = MagicMock()
+
+        from mem0.memory.main import AsyncMemory
+        memory = AsyncMemory(MemoryConfig())
+        await memory.get_all(filters={
+            "user_id": "u1",
+            "OR": [{"scope_key": "global"}, {"scope_key": "project:occ"}],
+        })
+
+        called_filters = mock_vector_store.list.call_args.kwargs["filters"]
+        assert "OR" not in called_filters
+        assert called_filters["$or"] == [{"scope_key": "global"}, {"scope_key": "project:occ"}]
+
+
 # --- Issue #3040: reset() should clean up graph database ---
 
 @patch('mem0.utils.factory.EmbedderFactory.create')

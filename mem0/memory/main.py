@@ -1300,6 +1300,17 @@ class Memory(MemoryBase):
         fetch_limit = limit if show_expired else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
+        # Apply enhanced metadata filtering if advanced operators are detected
+        if self._has_advanced_operators(effective_filters):
+            processed_filters = self._process_metadata_filters(effective_filters)
+            # Remove logical/operator keys that have been reprocessed
+            for logical_key in ("AND", "OR", "NOT"):
+                effective_filters.pop(logical_key, None)
+            for fk in list(effective_filters.keys()):
+                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "run_id") and isinstance(effective_filters.get(fk), dict):
+                    effective_filters.pop(fk, None)
+            effective_filters.update(processed_filters)
+
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event(
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
@@ -2945,6 +2956,17 @@ class AsyncMemory(MemoryBase):
         limit = top_k
         fetch_limit = limit if show_expired else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
+
+        # Apply enhanced metadata filtering if advanced operators are detected
+        if self._has_advanced_operators(effective_filters):
+            processed_filters = self._process_metadata_filters(effective_filters)
+            # Remove logical/operator keys that have been reprocessed
+            for logical_key in ("AND", "OR", "NOT"):
+                effective_filters.pop(logical_key, None)
+            for fk in list(effective_filters.keys()):
+                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "run_id") and isinstance(effective_filters.get(fk), dict):
+                    effective_filters.pop(fk, None)
+            effective_filters.update(processed_filters)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event(
