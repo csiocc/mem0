@@ -8,6 +8,8 @@ server/main.py; requires the session manager lifespan to be running.
 
 from __future__ import annotations
 
+import functools
+import logging
 import re
 import uuid
 from contextvars import ContextVar
@@ -32,9 +34,28 @@ from memory_scope import (
 from models import User
 from server_state import get_memory_instance
 
+logger = logging.getLogger(__name__)
+
 mcp = MCPServer(name="mem0")
 
 current_user: ContextVar[User] = ContextVar("mcp_current_user")
+
+
+def _sanitize_upstream_errors(func):
+    """Hide raw backend exceptions from tool callers; only ValueError (the
+    tools' own input-validation signal, incl. ScopeError) passes through."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("MCP tool backend error")
+            raise ValueError("Memory backend unavailable.")
+
+    return wrapper
 
 
 def _user() -> User:
@@ -65,6 +86,10 @@ class ApiKeyAuth:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        if scope["path"] != "/mcp":
+            response = JSONResponse({"detail": "Not found."}, status_code=404)
+            await response(scope, receive, send)
+            return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         api_key = headers.get("x-api-key")
         if not api_key:
@@ -88,6 +113,9 @@ class ApiKeyAuth:
 
 
 # API-key auth is the gate; Host-header pinning would break VM deployments.
+# stateless_http=True: identity via the current_user contextvar is only safe
+# because stateless mode starts the per-request server task inside the
+# request's own context, so the ContextVar.set() above is visible to it.
 _inner_app = mcp.streamable_http_app(
     streamable_http_path="/mcp",
     json_response=True,
@@ -183,6 +211,7 @@ def _owned_memory_or_error(memory_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def search_memories(
     query: str,
     scope: str = "project",
@@ -209,6 +238,7 @@ def search_memories(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def get_memories(
     scope: str = "project",
     project_id: str | None = None,
@@ -228,6 +258,7 @@ def get_memories(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def get_memory(memory_id: str) -> dict[str, Any]:
     """Get one memory owned by the authenticated user by its ID."""
     return _owned_memory_or_error(memory_id)
@@ -243,6 +274,7 @@ def _check_metadata(metadata: dict[str, Any] | None) -> None:
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def add_memory(
     text: str,
     scope: str = "project",
@@ -269,6 +301,7 @@ def add_memory(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def update_memory(
     memory_id: str,
     text: str,
@@ -287,6 +320,7 @@ def update_memory(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def delete_memory(memory_id: str) -> dict[str, Any]:
     """Delete one specifically identified memory owned by the authenticated user."""
     _owned_memory_or_error(memory_id)
@@ -316,6 +350,7 @@ def _import_uuid(import_id: str) -> uuid.UUID:
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def begin_memory_import(
     source_ref: str,
     source_sha256: str,
@@ -346,6 +381,7 @@ def begin_memory_import(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def append_memory_import(
     import_id: str,
     memories: list[dict[str, str | None]],
@@ -379,6 +415,7 @@ def append_memory_import(
 
 
 @mcp.tool()
+@_sanitize_upstream_errors
 def finish_memory_import(import_id: str) -> dict[str, Any]:
     """Mark a fully processed source import as complete and return final counts."""
     with SessionLocal() as db:

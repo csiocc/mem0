@@ -103,6 +103,19 @@ def test_mcp_requires_api_key(mcp_client):
     assert response.status_code == 401
 
 
+def test_unknown_path_is_404_not_401(mcp_client):
+    client, _, _ = mcp_client
+    get_response = client.get("/definitely-not-a-route")
+    assert get_response.status_code == 404
+
+    post_response = client.post("/definitely-not-a-route", json={})
+    assert post_response.status_code == 404
+
+    # /mcp itself is still gated by the API key.
+    still_gated = rpc(client, "initialize", INIT_PARAMS, api_key=None)
+    assert still_gated.status_code == 401
+
+
 def test_mcp_rejects_invalid_api_key(mcp_client):
     client, _, _ = mcp_client
     response = rpc(client, "initialize", INIT_PARAMS, api_key="wrong")
@@ -179,6 +192,18 @@ def test_search_requires_project_id_for_project_scope(mcp_client):
     assert result.get("isError") is True
     assert "project_id is required" in result["content"][0]["text"]
     memory.search.assert_not_called()
+
+
+def test_search_backend_error_is_sanitized(mcp_client):
+    client, memory, _ = mcp_client
+    memory.search.side_effect = RuntimeError("postgresql://user:pass@host/db exploded")
+
+    result = tool_call(client, "search_memories", {"query": "q", "scope": "global"})
+
+    assert result.get("isError") is True
+    text = result["content"][0]["text"]
+    assert "Memory backend unavailable." in text
+    assert "postgresql" not in text
 
 
 def test_search_budget_omits_oversized_entries(mcp_client):
@@ -448,6 +473,11 @@ def test_search_filters_are_bound_to_the_calling_user(mcp_client):
 
     _, kwargs = memory.search.call_args
     assert kwargs["filters"] == {"user_id": USER_B_ID, "scope_key": "global"}
+
+
+def test_session_manager_is_stateless(mcp_client):
+    _, _, mcp_endpoint = mcp_client
+    assert mcp_endpoint.mcp.session_manager.stateless is True
 
 
 def test_tools_list_exposes_exactly_nine_tools_without_user_id(mcp_client):
