@@ -424,6 +424,32 @@ def test_finish_memory_import(mcp_client, monkeypatch):
     assert tool_payload(result)["state"] == "completed"
 
 
+def test_user_b_cannot_read_update_or_delete_user_a_memory(mcp_client):
+    client, memory, _ = mcp_client
+    # memory.get keeps returning USER_A's mem-1.
+
+    for name, args in [
+        ("get_memory", {"memory_id": "mem-1"}),
+        ("update_memory", {"memory_id": "mem-1", "text": "hijack"}),
+        ("delete_memory", {"memory_id": "mem-1"}),
+    ]:
+        result = tool_call(client, name, args, api_key="key-b")
+        assert result.get("isError") is True, name
+        assert "not found" in result["content"][0]["text"].lower()
+    memory.update.assert_not_called()
+    memory.delete.assert_not_called()
+
+
+def test_search_filters_are_bound_to_the_calling_user(mcp_client):
+    client, memory, _ = mcp_client
+    memory.search.return_value = {"results": []}
+
+    tool_call(client, "search_memories", {"query": "q", "scope": "global"}, api_key="key-b")
+
+    _, kwargs = memory.search.call_args
+    assert kwargs["filters"] == {"user_id": USER_B_ID, "scope_key": "global"}
+
+
 def test_tools_list_exposes_exactly_nine_tools_without_user_id(mcp_client):
     client, _, _ = mcp_client
     response = rpc(client, "tools/list", {}, id=3)
