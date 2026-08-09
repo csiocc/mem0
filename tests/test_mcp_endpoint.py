@@ -276,7 +276,7 @@ def test_update_memory_checks_ownership_and_reserved_keys(mcp_client):
 
     assert tool_payload(result)["message"] == "Memory updated successfully"
     _, kwargs = memory.update.call_args
-    assert kwargs == {"memory_id": "mem-1", "data": "new text"}
+    assert kwargs == {"memory_id": "mem-1", "text": "new text"}
 
     bad = tool_call(
         client,

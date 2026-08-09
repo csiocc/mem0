@@ -278,7 +278,7 @@ def update_memory(
     """
     _owned_memory_or_error(memory_id)
     _check_metadata(metadata)
-    params: dict[str, Any] = {"memory_id": memory_id, "data": text}
+    params: dict[str, Any] = {"memory_id": memory_id, "text": text}
     if metadata is not None:
         params["metadata"] = metadata
     return get_memory_instance().update(**params)
