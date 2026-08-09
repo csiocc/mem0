@@ -9,6 +9,7 @@ server/main.py; requires the session manager lifespan to be running.
 from __future__ import annotations
 
 import re
+import uuid
 from contextvars import ContextVar
 from typing import Any
 
@@ -19,6 +20,7 @@ from starlette.responses import JSONResponse
 
 from auth import _resolve_user_from_api_key
 from db import SessionLocal
+from memory_imports import ImportConflict, append_memories, begin_import, finish_import
 from memory_scope import (
     RESERVED_SCOPE_METADATA,
     MemoryScope,
@@ -290,3 +292,98 @@ def delete_memory(memory_id: str) -> dict[str, Any]:
     _owned_memory_or_error(memory_id)
     get_memory_instance().delete(memory_id=memory_id)
     return {"message": "Memory deleted successfully"}
+
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _import_response(source, *, state: str, errors: list | None = None) -> dict[str, Any]:
+    return {
+        "state": state,
+        "import_id": str(source.id),
+        "stored_count": source.stored_count,
+        "duplicate_count": source.duplicate_count,
+        "failed_count": source.failed_count,
+        "errors": errors or [],
+    }
+
+
+def _import_uuid(import_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(import_id)
+    except ValueError:
+        raise ValueError("import_id must be a UUID returned by begin_memory_import.")
+
+
+@mcp.tool()
+def begin_memory_import(
+    source_ref: str,
+    source_sha256: str,
+    scope: str = "project",
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Begin, resume or skip one source-file import for the authenticated user.
+
+    Returns state started, resumed or unchanged with the import ID. Imports
+    store already extracted memory text with infer=false. scope is 'project'
+    (default, requires explicit project_id) or 'global'.
+    """
+    target = _resolve_tool_scope(scope, project_id)
+    if not _SHA256_PATTERN.fullmatch(source_sha256):
+        raise ValueError("source_sha256 must be a lowercase hex sha256.")
+    with SessionLocal() as db:
+        try:
+            result = begin_import(
+                db=db,
+                user_id=_user().id,
+                target=target,
+                source_ref=source_ref,
+                source_sha256=source_sha256,
+            )
+        except ImportConflict as exc:
+            raise ValueError(str(exc))
+        return _import_response(result.source, state=result.state)
+
+
+@mcp.tool()
+def append_memory_import(
+    import_id: str,
+    memories: list[dict[str, str | None]],
+) -> dict[str, Any]:
+    """Append extracted memories to an open import owned by the authenticated user.
+
+    Each item carries `text` (one distilled, standalone memory) and
+    `source_section` (label or null). The server stores them with
+    infer=false and skips exact duplicates. Send at most 3 memories per
+    call, strictly sequentially — embeddings are generated per memory.
+    """
+    items = []
+    for item in memories:
+        text = (item.get("text") or "").strip()
+        if not text:
+            raise ValueError("every import item needs a non-empty text.")
+        items.append({"text": text, "source_section": item.get("source_section")})
+    with SessionLocal() as db:
+        try:
+            result = append_memories(
+                db=db,
+                memory=get_memory_instance(),
+                user_id=_user().id,
+                import_id=_import_uuid(import_id),
+                items=items,
+            )
+        except ImportConflict as exc:
+            raise ValueError(str(exc))
+        state = "failed" if result.failed else "in_progress"
+        return _import_response(result.source, state=state, errors=result.errors)
+
+
+@mcp.tool()
+def finish_memory_import(import_id: str) -> dict[str, Any]:
+    """Mark a fully processed source import as complete and return final counts."""
+    with SessionLocal() as db:
+        try:
+            source = finish_import(db=db, user_id=_user().id, import_id=_import_uuid(import_id))
+        except ImportConflict as exc:
+            raise ValueError(str(exc))
+        return _import_response(source, state="completed")

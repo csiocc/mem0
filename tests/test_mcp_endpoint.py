@@ -307,3 +307,138 @@ def test_delete_memory_owned_only(mcp_client):
     memory.get.return_value = {"id": "mem-9", "memory": "foreign", "user_id": USER_B_ID}
     foreign = tool_call(client, "delete_memory", {"memory_id": "mem-9"})
     assert foreign.get("isError") is True
+
+
+def test_begin_memory_import(mcp_client, monkeypatch):
+    client, _, mcp_endpoint = mcp_client
+    source = MagicMock(
+        id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        stored_count=0, duplicate_count=0, failed_count=0,
+    )
+    begin = MagicMock(state="started", source=source)
+    called = {}
+
+    def fake_begin_import(**kwargs):
+        called.update(kwargs)
+        return begin
+
+    monkeypatch.setattr(mcp_endpoint, "begin_import", fake_begin_import)
+    monkeypatch.setattr(mcp_endpoint, "SessionLocal", MagicMock())
+
+    result = tool_call(
+        client,
+        "begin_memory_import",
+        {
+            "source_ref": "docs/memory.md",
+            "source_sha256": "a" * 64,
+            "scope": "project",
+            "project_id": "occ",
+        },
+    )
+
+    payload = tool_payload(result)
+    assert payload["state"] == "started"
+    assert payload["import_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert called["user_id"] == uuid.UUID(USER_A_ID)
+
+
+def test_begin_memory_import_rejects_bad_sha(mcp_client, monkeypatch):
+    client, _, mcp_endpoint = mcp_client
+    guard = MagicMock()
+    monkeypatch.setattr(mcp_endpoint, "begin_import", guard)
+
+    result = tool_call(
+        client,
+        "begin_memory_import",
+        {"source_ref": "x.md", "source_sha256": "nothex", "scope": "global"},
+    )
+
+    assert result.get("isError") is True
+    guard.assert_not_called()
+
+
+def test_append_memory_import(mcp_client, monkeypatch):
+    client, _, mcp_endpoint = mcp_client
+    source = MagicMock(
+        id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        stored_count=2, duplicate_count=1, failed_count=0,
+    )
+    append = MagicMock(source=source, failed=[], errors=[])
+    monkeypatch.setattr(mcp_endpoint, "append_memories", MagicMock(return_value=append))
+    monkeypatch.setattr(mcp_endpoint, "SessionLocal", MagicMock())
+
+    result = tool_call(
+        client,
+        "append_memory_import",
+        {
+            "import_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "memories": [
+                {"text": "First distilled memory", "source_section": "Setup"},
+                {"text": "Second distilled memory", "source_section": None},
+            ],
+        },
+    )
+
+    payload = tool_payload(result)
+    assert payload["state"] == "in_progress"
+    assert payload["stored_count"] == 2
+
+
+def test_append_rejects_foreign_import(mcp_client, monkeypatch):
+    client, _, mcp_endpoint = mcp_client
+    from memory_imports import ImportConflict
+
+    monkeypatch.setattr(
+        mcp_endpoint,
+        "append_memories",
+        MagicMock(side_effect=ImportConflict("Import not found.")),
+    )
+    monkeypatch.setattr(mcp_endpoint, "SessionLocal", MagicMock())
+
+    result = tool_call(
+        client,
+        "append_memory_import",
+        {
+            "import_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "memories": [{"text": "x", "source_section": None}],
+        },
+    )
+
+    assert result.get("isError") is True
+    assert "not found" in result["content"][0]["text"].lower()
+
+
+def test_finish_memory_import(mcp_client, monkeypatch):
+    client, _, mcp_endpoint = mcp_client
+    source = MagicMock(
+        id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        stored_count=2, duplicate_count=1, failed_count=0,
+    )
+    monkeypatch.setattr(mcp_endpoint, "finish_import", MagicMock(return_value=source))
+    monkeypatch.setattr(mcp_endpoint, "SessionLocal", MagicMock())
+
+    result = tool_call(
+        client, "finish_memory_import", {"import_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}
+    )
+
+    assert tool_payload(result)["state"] == "completed"
+
+
+def test_tools_list_exposes_exactly_nine_tools_without_user_id(mcp_client):
+    client, _, _ = mcp_client
+    response = rpc(client, "tools/list", {}, id=3)
+    tools = response.json()["result"]["tools"]
+    names = sorted(tool["name"] for tool in tools)
+    assert names == [
+        "add_memory",
+        "append_memory_import",
+        "begin_memory_import",
+        "delete_memory",
+        "finish_memory_import",
+        "get_memories",
+        "get_memory",
+        "search_memories",
+        "update_memory",
+    ]
+    for tool in tools:
+        assert "user_id" not in tool["inputSchema"].get("properties", {})
