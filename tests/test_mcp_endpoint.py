@@ -115,3 +115,100 @@ def test_mcp_initialize_with_valid_key(mcp_client):
     response = rpc(client, "initialize", INIT_PARAMS)
     assert response.status_code == 200
     assert response.json()["result"]["serverInfo"]["name"] == "mem0"
+
+
+def tool_call(client, name, arguments, api_key="key-a"):
+    response = rpc(
+        client,
+        "tools/call",
+        {"name": name, "arguments": arguments},
+        api_key=api_key,
+        id=2,
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    return result
+
+
+def tool_payload(result):
+    import json
+
+    if result.get("structuredContent") is not None:
+        return result["structuredContent"]
+    return json.loads(result["content"][0]["text"])
+
+
+def test_search_scopes_to_authenticated_user_and_wraps_untrusted(mcp_client):
+    client, memory, _ = mcp_client
+    memory.search.return_value = {"results": [{"id": "mem-1", "memory": "note"}]}
+
+    result = tool_call(
+        client, "search_memories", {"query": "note", "scope": "project", "project_id": "occ"}
+    )
+
+    payload = tool_payload(result)
+    assert payload["untrusted_reference_data"] is True
+    assert payload["results"][0]["memory"] == "note"
+    _, kwargs = memory.search.call_args
+    assert kwargs["filters"] == {
+        "user_id": USER_A_ID,
+        "OR": [{"scope_key": "global"}, {"scope_key": "project:occ"}],
+    }
+    assert kwargs["top_k"] == 100
+
+
+def test_search_requires_project_id_for_project_scope(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(client, "search_memories", {"query": "note"})
+
+    assert result.get("isError") is True
+    assert "project_id is required" in result["content"][0]["text"]
+    memory.search.assert_not_called()
+
+
+def test_search_budget_omits_oversized_entries(mcp_client):
+    client, memory, _ = mcp_client
+    memory.search.return_value = {
+        "results": [{"id": "m1", "memory": "x" * 200}, {"id": "m2", "memory": "y" * 5000}]
+    }
+
+    result = tool_call(
+        client,
+        "search_memories",
+        {"query": "q", "scope": "global", "context_budget_chars": 1000},
+    )
+
+    payload = tool_payload(result)
+    assert [entry["id"] for entry in payload["results"]] == ["m1"]
+    assert payload["omitted_results"] == 1
+
+
+def test_get_memories_lists_scope(mcp_client):
+    client, memory, _ = mcp_client
+    memory.get_all.return_value = {"results": [{"id": "mem-1", "memory": "note"}]}
+
+    result = tool_call(client, "get_memories", {"scope": "project", "project_id": "occ"})
+
+    payload = tool_payload(result)
+    assert payload["untrusted_reference_data"] is True
+    _, kwargs = memory.get_all.call_args
+    assert kwargs["top_k"] == 20
+
+
+def test_get_memory_returns_owned(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(client, "get_memory", {"memory_id": "mem-1"})
+
+    assert tool_payload(result)["id"] == "mem-1"
+
+
+def test_get_memory_foreign_is_not_found(mcp_client):
+    client, memory, _ = mcp_client
+    memory.get.return_value = {"id": "mem-9", "memory": "foreign", "user_id": USER_B_ID}
+
+    result = tool_call(client, "get_memory", {"memory_id": "mem-9"})
+
+    assert result.get("isError") is True
+    assert "not found" in result["content"][0]["text"].lower()
