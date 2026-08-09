@@ -1,6 +1,6 @@
 fastapi==0.115.8
 uvicorn==0.34.0
-pydantic[email]==2.10.4
+pydantic[email]==2.13.4  # mcp==2.0.0 requires pydantic>=2.12.0
 mem0ai>=0.1.48
 python-dotenv==1.2.2
 psycopg>=3.2.8
@@ -9,6 +9,12 @@ psycopg-pool>=3.2.6,<4.0.0
 # Bundled LLM/embedder providers.
 anthropic>=0.39,<1.0
 ollama>=0.3,<1.0
+
+# MCP Streamable HTTP endpoint (central-mcp-spike)
+# sse-starlette pinned: mcp's own bound (>=3.0.0) resolves to a version
+# requiring starlette>=0.49.1, which conflicts with fastapi's starlette<0.46.0 pin above.
+mcp==2.0.0
+sse-starlette==3.0.0
 
 # Auth & database (Phase 1)
 sqlalchemy>=2.0,<3.0
