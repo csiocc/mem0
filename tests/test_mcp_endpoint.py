@@ -226,3 +226,84 @@ def test_get_memory_foreign_is_not_found(mcp_client):
 
     assert result.get("isError") is True
     assert "not found" in result["content"][0]["text"].lower()
+
+
+def test_add_memory_binds_scope_and_disables_inference(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(
+        client, "add_memory", {"text": "Use uv for tooling", "scope": "project", "project_id": "occ"}
+    )
+
+    assert tool_payload(result)["results"][0]["event"] == "ADD"
+    _, kwargs = memory.add.call_args
+    assert kwargs["user_id"] == USER_A_ID
+    assert kwargs["infer"] is False
+    assert kwargs["metadata"]["scope_key"] == "project:occ"
+    assert kwargs["messages"] == [{"role": "user", "content": "Use uv for tooling"}]
+
+
+def test_add_memory_rejects_reserved_metadata(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(
+        client,
+        "add_memory",
+        {"text": "x", "scope": "global", "metadata": {"user_id": "evil"}},
+    )
+
+    assert result.get("isError") is True
+    assert "reserved metadata" in result["content"][0]["text"]
+    memory.add.assert_not_called()
+
+
+def test_add_memory_rejects_bad_project_slug(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(
+        client, "add_memory", {"text": "x", "scope": "project", "project_id": "Bad Slug"}
+    )
+
+    assert result.get("isError") is True
+    memory.add.assert_not_called()
+
+
+def test_update_memory_checks_ownership_and_reserved_keys(mcp_client):
+    client, memory, _ = mcp_client
+    memory.update.return_value = {"message": "Memory updated successfully"}
+
+    result = tool_call(client, "update_memory", {"memory_id": "mem-1", "text": "new text"})
+
+    assert tool_payload(result)["message"] == "Memory updated successfully"
+    _, kwargs = memory.update.call_args
+    assert kwargs == {"memory_id": "mem-1", "data": "new text"}
+
+    bad = tool_call(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "text": "t", "metadata": {"scope": "global"}},
+    )
+    assert bad.get("isError") is True
+
+
+def test_update_memory_foreign_is_not_found(mcp_client):
+    client, memory, _ = mcp_client
+    memory.get.return_value = {"id": "mem-9", "memory": "foreign", "user_id": USER_B_ID}
+
+    result = tool_call(client, "update_memory", {"memory_id": "mem-9", "text": "hijack"})
+
+    assert result.get("isError") is True
+    memory.update.assert_not_called()
+
+
+def test_delete_memory_owned_only(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(client, "delete_memory", {"memory_id": "mem-1"})
+
+    assert tool_payload(result)["message"] == "Memory deleted successfully"
+    memory.delete.assert_called_once_with(memory_id="mem-1")
+
+    memory.get.return_value = {"id": "mem-9", "memory": "foreign", "user_id": USER_B_ID}
+    foreign = tool_call(client, "delete_memory", {"memory_id": "mem-9"})
+    assert foreign.get("isError") is True

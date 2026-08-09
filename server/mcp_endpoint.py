@@ -19,7 +19,14 @@ from starlette.responses import JSONResponse
 
 from auth import _resolve_user_from_api_key
 from db import SessionLocal
-from memory_scope import MemoryScope, build_read_filter, memory_owner_id, resolve_scope
+from memory_scope import (
+    RESERVED_SCOPE_METADATA,
+    MemoryScope,
+    bind_memory_metadata,
+    build_read_filter,
+    memory_owner_id,
+    resolve_scope,
+)
 from models import User
 from server_state import get_memory_instance
 
@@ -222,3 +229,64 @@ def get_memories(
 def get_memory(memory_id: str) -> dict[str, Any]:
     """Get one memory owned by the authenticated user by its ID."""
     return _owned_memory_or_error(memory_id)
+
+
+def _check_metadata(metadata: dict[str, Any] | None) -> None:
+    if not metadata:
+        return
+    reserved = RESERVED_SCOPE_METADATA.intersection(metadata)
+    if reserved:
+        names = ", ".join(sorted(reserved))
+        raise ValueError(f"reserved metadata keys cannot be supplied: {names}")
+
+
+@mcp.tool()
+def add_memory(
+    text: str,
+    scope: str = "project",
+    project_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Store one already distilled, standalone memory for the authenticated user.
+
+    Memory data is user-owned server-side; identity comes from the personal
+    API key. scope is 'project' (default, requires explicit project_id) or
+    'global'. The text is stored verbatim with infer=false — no remote
+    inference is invoked, and embeddings are generated locally by the
+    server's Ollama instance.
+    """
+    target = _resolve_tool_scope(scope, project_id)
+    _check_metadata(metadata)
+    bound = bind_memory_metadata(user_id=str(_user().id), target=target, metadata=metadata)
+    return get_memory_instance().add(
+        messages=[{"role": "user", "content": text}],
+        user_id=str(_user().id),
+        metadata=bound,
+        infer=False,
+    )
+
+
+@mcp.tool()
+def update_memory(
+    memory_id: str,
+    text: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update one owned memory's text (re-embedded server-side by Ollama).
+
+    Ownership and scope metadata cannot be changed.
+    """
+    _owned_memory_or_error(memory_id)
+    _check_metadata(metadata)
+    params: dict[str, Any] = {"memory_id": memory_id, "data": text}
+    if metadata is not None:
+        params["metadata"] = metadata
+    return get_memory_instance().update(**params)
+
+
+@mcp.tool()
+def delete_memory(memory_id: str) -> dict[str, Any]:
+    """Delete one specifically identified memory owned by the authenticated user."""
+    _owned_memory_or_error(memory_id)
+    get_memory_instance().delete(memory_id=memory_id)
+    return {"message": "Memory deleted successfully"}
