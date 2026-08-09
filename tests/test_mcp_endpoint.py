@@ -157,6 +157,20 @@ def test_search_scopes_to_authenticated_user_and_wraps_untrusted(mcp_client):
     assert kwargs["top_k"] == 100
 
 
+def test_search_rejects_bad_slug_regardless_of_scope_casing(mcp_client):
+    client, memory, _ = mcp_client
+
+    result = tool_call(
+        client,
+        "search_memories",
+        {"query": "note", "scope": " Project", "project_id": "Bad Slug"},
+    )
+
+    assert result.get("isError") is True
+    assert "project_id must be a lowercase slug" in result["content"][0]["text"]
+    memory.search.assert_not_called()
+
+
 def test_search_requires_project_id_for_project_scope(mcp_client):
     client, memory, _ = mcp_client
 

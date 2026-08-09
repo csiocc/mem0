@@ -19,15 +19,7 @@ from starlette.responses import JSONResponse
 
 from auth import _resolve_user_from_api_key
 from db import SessionLocal
-from memory_scope import (
-    MemoryScope,
-    RESERVED_SCOPE_METADATA,
-    ScopeError,
-    bind_memory_metadata,
-    build_read_filter,
-    memory_owner_id,
-    resolve_scope,
-)
+from memory_scope import MemoryScope, build_read_filter, memory_owner_id, resolve_scope
 from models import User
 from server_state import get_memory_instance
 
@@ -122,6 +114,7 @@ UNTRUSTED_NOTICE = (
 
 
 def _resolve_tool_scope(scope: str, project_id: str | None) -> MemoryScope:
+    scope = scope.strip().lower()
     if scope == "project":
         if not project_id:
             raise ValueError(
