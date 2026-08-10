@@ -167,6 +167,17 @@ set_session_factory(SessionLocal)
 initialize_state(DEFAULT_CONFIG)
 
 
+from contextlib import asynccontextmanager
+
+import mcp_endpoint
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    async with mcp_endpoint.lifespan_context():
+        yield
+
+
 app = FastAPI(
     title="Mem0 REST APIs",
     description=(
@@ -177,6 +188,7 @@ app = FastAPI(
     ),
     version="1.0.0",
     redirect_slashes=False,
+    lifespan=_lifespan,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -610,3 +622,7 @@ def reset_memory(_auth=Depends(require_admin)):
 def home():
     """Redirect to the OpenAPI documentation."""
     return RedirectResponse(url="/docs")
+
+
+# Catch-all mount so the MCP route /mcp resolves after all API routes.
+app.mount("/", mcp_endpoint.asgi_app)
