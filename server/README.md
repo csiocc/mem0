@@ -179,6 +179,33 @@ Memories created before the multi-user scoping carry no owner. Administrators
 must explicitly assign or migrate those legacy memories before enabling
 multi-user access; the server does not guess an owner.
 
+## Async memory ingest
+
+`POST /memories` accepts an optional `"async": true` flag. With it, the
+request only authenticates, validates and persists the payload in the
+`memory_ingests` queue table, then returns `202` with
+`{"ingest_id": "...", "status": "pending"}` in milliseconds. Without the
+flag the endpoint behaves synchronously, exactly as before — MCP tools and
+interactive clients keep getting the full add result. Validation errors are
+synchronous 4xx responses in both modes.
+
+A worker thread (started with the app, disable with
+`INGEST_WORKER_ENABLED=false`) processes the queue: it claims a row, runs
+the actual memory add (LLM extraction, embedding, vector write) and deletes
+the row on success. Transient failures retry up to 5 times with
+60s/5m/15m/60m backoff; validation errors fail immediately. Rows orphaned
+by a crashed worker return to the queue after 15 minutes.
+
+Privacy and retention: raw payload content exists only in queued and failed
+rows — success deletes the row immediately, failed rows are purged after 30
+days, and neither API responses nor log lines ever contain payload content
+(errors are recorded as exception class names only).
+
+Inspection: `GET /memory-ingests` (owner-scoped, optional
+`?status=pending|processing|failed`), `GET /memory-ingests/{id}`, and
+`POST /memory-ingests/{id}/retry` for failed rows. The dashboard shows the
+same queue under **Ingests**, including a retry button.
+
 ## Forgotten password
 
 Reset an admin password from the host while the stack is running:
