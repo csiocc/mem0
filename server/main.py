@@ -4,6 +4,7 @@ import os
 import time
 from typing import Any, Dict, List, Literal, Optional
 
+import ingest_worker
 import telemetry
 from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, require_auth, verify_auth
 from db import SessionLocal
@@ -228,6 +229,11 @@ class MemoryCreate(BaseModel):
     infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
     memory_type: Optional[str] = Field(None, description="Type of memory to store (e.g. 'core').")
     prompt: Optional[str] = Field(None, description="Custom prompt to use for fact extraction.")
+    async_processing: Optional[bool] = Field(
+        None,
+        alias="async",
+        description="Accept the write, persist it server-side, process it in the background, return 202.",
+    )
 
 
 class MemoryUpdate(BaseModel):
@@ -437,12 +443,30 @@ def add_memory(memory_create: MemoryCreate, user: User = Depends(require_auth)):
             target=target,
             metadata=memory_create.metadata,
         )
-        excluded = {"messages", "user_id", "scope", "project_id", "metadata"}
+        excluded = {"messages", "user_id", "scope", "project_id", "metadata", "async_processing"}
         params = {
             key: value
             for key, value in memory_create.model_dump().items()
             if value is not None and key not in excluded
         }
+        if memory_create.async_processing:
+            ingest_id = ingest_worker.enqueue_ingest(
+                SessionLocal,
+                user_id=user.id,
+                payload={
+                    "messages": [message.model_dump() for message in memory_create.messages],
+                    "params": params,
+                },
+                bound_metadata=metadata,
+                scope=memory_create.scope,
+                project_id=memory_create.project_id,
+                scope_key=str(metadata.get("scope_key", "")),
+                request_id=request_id_var.get(),
+            )
+            return JSONResponse(
+                status_code=202,
+                content={"ingest_id": str(ingest_id), "status": "pending"},
+            )
         response = get_memory_instance().add(
             messages=[message.model_dump() for message in memory_create.messages],
             user_id=_authenticated_user_id(user),
