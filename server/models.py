@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -116,3 +116,35 @@ class Settings(Base):
         default=_utcnow,
         onupdate=_utcnow,
     )
+
+
+class MemoryIngest(Base):
+    __tablename__ = "memory_ingests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'failed')",
+            name="ck_memory_ingests_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Raw request payload ({"messages": [...], "params": {...}}) — exists only
+    # until the worker processed the row; success deletes it.
+    payload: Mapped[dict] = mapped_column(JSON)
+    bound_metadata: Mapped[dict] = mapped_column(JSON)
+    scope: Mapped[str] = mapped_column(String(20))
+    project_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scope_key: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
