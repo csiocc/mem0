@@ -31,6 +31,11 @@ export const REQUEST_ENDPOINTS = {
   BASE: "/requests",
 } as const;
 
+export const INGEST_ENDPOINTS = {
+  BASE: "/memory-ingests",
+  RETRY: (id: string) => `/memory-ingests/${id}/retry`,
+} as const;
+
 export const ENTITY_ENDPOINTS = {
   BASE: "/entities",
   BY_ID: (type: string, id: string) =>

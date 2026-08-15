@@ -8,6 +8,7 @@ import {
   ChevronDown,
   FolderInput,
   GalleryVerticalEnd,
+  Hourglass,
   KeyRound,
   Settings,
   Tags,
@@ -70,6 +71,12 @@ export function MainNav({
                     url: "/dashboard/requests",
                     icon: Activity,
                     active: pathname === "/dashboard/requests",
+                  },
+                  {
+                    title: "Ingests",
+                    url: "/dashboard/ingests",
+                    icon: Hourglass,
+                    active: pathname === "/dashboard/ingests",
                   },
                   {
                     title: "Memories",
