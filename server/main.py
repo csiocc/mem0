@@ -34,6 +34,7 @@ from rate_limit import limiter
 from routers import api_keys as api_keys_router
 from routers import auth as auth_router
 from routers import entities as entities_router
+from routers import ingests as ingests_router
 from routers import memory_imports as memory_imports_router
 from routers import requests as requests_router
 from routers import users as users_router
@@ -216,6 +217,7 @@ app.add_middleware(
 app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
 app.include_router(entities_router.router)
+app.include_router(ingests_router.router)
 app.include_router(memory_imports_router.router)
 app.include_router(requests_router.router)
 app.include_router(users_router.router)
