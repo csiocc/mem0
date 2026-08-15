@@ -175,8 +175,18 @@ import mcp_endpoint
 
 @asynccontextmanager
 async def _lifespan(_app):
-    async with mcp_endpoint.lifespan_context():
-        yield
+    worker = None
+    if os.environ.get("INGEST_WORKER_ENABLED", "true").strip().lower() != "false":
+        worker = ingest_worker.start_worker(SessionLocal)
+    try:
+        async with mcp_endpoint.lifespan_context():
+            yield
+    finally:
+        if worker is not None:
+            thread, stop = worker
+            stop.set()
+            ingest_worker.wake_event.set()
+            thread.join(timeout=5)
 
 
 app = FastAPI(
