@@ -163,6 +163,23 @@ class TestSearchExplain:
         assert "explain" not in kwargs
 
 
+class TestSearchRerank:
+    """Reranking is opt-in per request: vector order is cheap, the LLM
+    judgement is not, so an unset flag must never trigger it."""
+
+    def test_rerank_true_forwarded(self, client, mock_memory):
+        resp = client.post("/search", json={"query": "food", **SCOPE, "rerank": True})
+        assert resp.status_code == 200
+        _, kwargs = mock_memory.search.call_args
+        assert kwargs["rerank"] is True
+
+    def test_rerank_omitted_uses_memory_default(self, client, mock_memory):
+        resp = client.post("/search", json={"query": "food", **SCOPE})
+        assert resp.status_code == 200
+        _, kwargs = mock_memory.search.call_args
+        assert "rerank" not in kwargs
+
+
 # ===========================================================================
 # SearchRequest: top_k + threshold together
 # ===========================================================================

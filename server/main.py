@@ -73,6 +73,10 @@ SKIPPED_REQUEST_LOG_PREFIXES = ("/requests",)
 
 BUNDLED_LLM_PROVIDERS = ("anthropic",)
 BUNDLED_EMBEDDER_PROVIDERS = ("ollama",)
+# The cross-encoder rerankers need torch and sentence-transformers, which are
+# not in this image and would run inference on the same CPUs as the embedder.
+# llm_reranker reuses the configured LLM instead.
+BUNDLED_RERANKER_PROVIDERS = ("llm_reranker",)
 
 
 def _warn_if_unconfigured() -> None:
@@ -130,6 +134,10 @@ DEFAULT_LLM_MODEL = os.environ.get("MEM0_DEFAULT_LLM_MODEL", "claude-haiku-4-5-2
 DEFAULT_EMBEDDER_MODEL = os.environ.get("MEM0_DEFAULT_EMBEDDER_MODEL", "nomic-embed-text")
 EMBEDDING_DIMS = int(os.environ.get("MEM0_EMBEDDING_DIMS", "768"))
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+# Empty disables reranking: search then returns raw vector order, whose scores
+# are not calibrated enough to separate a hit from its nearest neighbour.
+RERANKER_PROVIDER = os.environ.get("MEM0_RERANKER_PROVIDER", "").strip()
+RERANKER_MODEL = os.environ.get("MEM0_RERANKER_MODEL", DEFAULT_LLM_MODEL)
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
@@ -163,6 +171,18 @@ DEFAULT_CONFIG = {
     },
     "history_db_path": HISTORY_DB_PATH,
 }
+
+if RERANKER_PROVIDER:
+    # Only reached when a search passes rerank=true; an idle reranker costs
+    # nothing beyond being constructed at startup.
+    DEFAULT_CONFIG["reranker"] = {
+        "provider": RERANKER_PROVIDER,
+        "config": {
+            "provider": "anthropic",
+            "model": RERANKER_MODEL,
+            "api_key": ANTHROPIC_API_KEY,
+        },
+    }
 
 
 set_session_factory(SessionLocal)
@@ -266,6 +286,10 @@ class SearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     explain: Optional[bool] = Field(None, description="Include score details for each search result.")
     show_expired: Optional[bool] = Field(None, description="Include expired memories.")
+    rerank: Optional[bool] = Field(
+        None,
+        description="Reorder candidates by an LLM relevance judgement. Requires a configured reranker.",
+    )
 
 
 class GenerateInstructionsRequest(BaseModel):
@@ -335,6 +359,22 @@ def _validate_bundled_providers(config: Dict[str, Any]) -> None:
                 f"Bundled providers: {', '.join(BUNDLED_EMBEDDER_PROVIDERS)}. "
                 "To use another provider, install its Python package, rebuild the container, "
                 "and extend BUNDLED_EMBEDDER_PROVIDERS in server/main.py."
+            ),
+        )
+
+    reranker = config.get("reranker")
+    if (
+        isinstance(reranker, dict)
+        and (provider := reranker.get("provider"))
+        and provider not in BUNDLED_RERANKER_PROVIDERS
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Reranker provider '{provider}' is not bundled in this image. "
+                f"Bundled providers: {', '.join(BUNDLED_RERANKER_PROVIDERS)}. "
+                "To use another provider, install its Python package, rebuild the container, "
+                "and extend BUNDLED_RERANKER_PROVIDERS in server/main.py."
             ),
         )
 
@@ -553,6 +593,8 @@ def search_memories(search_req: SearchRequest, user: User = Depends(require_auth
             params["explain"] = search_req.explain
         if search_req.show_expired is not None:
             params["show_expired"] = search_req.show_expired
+        if search_req.rerank is not None:
+            params["rerank"] = search_req.rerank
         return get_memory_instance().search(query=search_req.query, filters=filters, **params)
     except ScopeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
