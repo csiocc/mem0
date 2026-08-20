@@ -31,6 +31,7 @@ from memory_scope import (
     build_read_filter,
     memory_owner_id,
     resolve_scope,
+    scope_run_id,
 )
 from models import User
 from server_state import get_memory_instance
@@ -293,9 +294,13 @@ def add_memory(
     target = _resolve_tool_scope(scope, project_id)
     _check_metadata(metadata)
     bound = bind_memory_metadata(user_id=str(_user().id), target=target, metadata=metadata)
+    # Tagged like the inferred writes even though infer=False needs no
+    # deduplication itself: a memory without run_id is invisible to the
+    # scoped dedup search of every later inferred write in this scope.
     return get_memory_instance().add(
         messages=[{"role": "user", "content": text}],
         user_id=str(_user().id),
+        run_id=scope_run_id(bound),
         metadata=bound,
         infer=False,
     )
@@ -483,3 +488,31 @@ def list_memory_scopes(include_expired: bool = False) -> dict[str, Any]:
         scopes.values(), key=lambda e: (e["updated_at"] or "", e["total_memories"]), reverse=True
     )
     return {"scopes": ordered, "scanned": len(payloads), "scan_limit": SCOPE_SCAN_LIMIT}
+
+
+@mcp.tool()
+@_sanitize_upstream_errors
+def retag_memory_scopes() -> dict[str, Any]:
+    """Give the caller's untagged memories the run_id of their own scope.
+
+    Memories written before scope tagging carry no run_id, which makes them
+    invisible to the scoped deduplication search of every later inferred
+    write. Retagging is idempotent and changes no memory text; it only
+    restores the boundary for existing data.
+    """
+    store = get_memory_instance().vector_store
+    rows = store.list(filters={"user_id": str(_user().id)}, top_k=SCOPE_SCAN_LIMIT)
+    payloads = rows[0] if rows and isinstance(rows[0], list) else rows or []
+
+    retagged = 0
+    skipped = 0
+    for row in payloads:
+        payload = dict(getattr(row, "payload", None) or {})
+        expected = scope_run_id(payload)
+        if not expected or payload.get("run_id") == expected:
+            skipped += 1
+            continue
+        payload["run_id"] = expected
+        store.update(vector_id=str(getattr(row, "id", "")), payload=payload)
+        retagged += 1
+    return {"retagged": retagged, "already_tagged": skipped, "scanned": len(payloads)}

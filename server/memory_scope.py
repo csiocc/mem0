@@ -72,6 +72,20 @@ def bind_memory_metadata(
     }
 
 
+def scope_run_id(bound_metadata: dict[str, Any]) -> str | None:
+    """Session identifier that keeps inference inside one scope.
+
+    mem0 builds both its recent-message context and its deduplication search
+    from user_id/agent_id/run_id only — scope_key is dropped. Without a
+    run_id, an inferred write therefore sees the user's messages and memories
+    from every other project and can extract their content into this scope.
+    Passing the scope key as run_id restores that boundary; reads are
+    unaffected because they filter on scope_key.
+    """
+    scope_key = bound_metadata.get("scope_key")
+    return str(scope_key) if scope_key else None
+
+
 def build_read_filter(user_id: str, target: MemoryScope) -> dict[str, Any]:
     if target.scope == "global":
         return {"user_id": user_id, "scope_key": "global"}

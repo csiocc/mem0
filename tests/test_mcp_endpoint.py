@@ -182,6 +182,36 @@ def _payload_row(scope_key, *, scope="project", project_id=None, kind=None, expi
     return SimpleNamespace(payload=payload)
 
 
+def test_add_memory_is_tagged_with_its_scope(mcp_client):
+    client, memory, _ = mcp_client
+
+    tool_call(client, "add_memory", {"text": "A fact.", "scope": "project", "project_id": "occ"})
+
+    _, kwargs = memory.add.call_args
+    # mem0 builds its recent-message context and dedup search from
+    # user/agent/run only, so an untagged write would be compared against
+    # every other project of this user.
+    assert kwargs["run_id"] == "project:occ"
+
+
+def test_retag_only_touches_untagged_memories(mcp_client):
+    client, memory, _ = mcp_client
+    memory.vector_store.list.return_value = [[
+        SimpleNamespace(id="m-1", payload={"user_id": USER_A_ID, "scope_key": "project:occ"}),
+        SimpleNamespace(id="m-2", payload={"user_id": USER_A_ID, "scope_key": "project:occ",
+                                           "run_id": "project:occ"}),
+        SimpleNamespace(id="m-3", payload={"user_id": USER_A_ID}),
+    ]]
+
+    payload = tool_payload(tool_call(client, "retag_memory_scopes", {}))
+
+    assert payload == {"retagged": 1, "already_tagged": 2, "scanned": 3}
+    (_, kwargs), = memory.vector_store.update.call_args_list
+    assert kwargs["payload"]["run_id"] == "project:occ"
+    # Retagging restores the boundary; it must not rewrite memory text.
+    assert "data" not in kwargs["payload"]
+
+
 def test_list_memory_scopes_groups_by_scope_and_counts_types(mcp_client):
     client, memory, _ = mcp_client
     memory.vector_store.list.return_value = [[
@@ -533,7 +563,7 @@ def test_session_manager_is_stateless(mcp_client):
     assert mcp_endpoint.mcp.session_manager.stateless is True
 
 
-def test_tools_list_exposes_exactly_ten_tools_without_user_id(mcp_client):
+def test_tools_list_exposes_exactly_eleven_tools_without_user_id(mcp_client):
     client, _, _ = mcp_client
     response = rpc(client, "tools/list", {}, id=3)
     tools = response.json()["result"]["tools"]
@@ -547,6 +577,7 @@ def test_tools_list_exposes_exactly_ten_tools_without_user_id(mcp_client):
         "get_memories",
         "get_memory",
         "list_memory_scopes",
+        "retag_memory_scopes",
         "search_memories",
         "update_memory",
     ]

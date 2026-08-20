@@ -77,11 +77,29 @@ def test_successful_ingest_deletes_the_row(session_factory):
     memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "probe"}],
         user_id="11111111-1111-1111-1111-111111111111",
+        run_id="project:occ",
         metadata={"scope_key": "project:occ"},
         infer=True,
     )
     with session_factory() as session:
         assert session.get(MemoryIngest, ingest_id) is None
+
+
+def test_inferred_ingest_stays_inside_its_scope(session_factory):
+    """Deferred writes are the inferred ones, and inference is where scopes leak.
+
+    mem0 builds both its recent-message context and its deduplication search
+    from user/agent/run identifiers only, dropping scope_key. Without a
+    run_id an inferred write sees the user's messages and memories from every
+    other project and can extract their content into this scope.
+    """
+    _enqueue(session_factory, bound_metadata={"scope_key": "global"}, scope="global",
+             project_id=None, scope_key="global")
+    memory = MagicMock()
+
+    _run_with_memory(session_factory, memory)
+
+    assert memory.add.call_args.kwargs["run_id"] == "global"
 
 
 def test_transient_failure_backs_off_and_stays_pending(session_factory):

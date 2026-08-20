@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from memory_scope import scope_run_id
 from models import MemoryIngest
 from server_state import get_memory_instance
 from sqlalchemy import delete, select, update
@@ -117,7 +118,11 @@ def _process_claimed(session_factory, ingest_id: uuid.UUID) -> None:
         previous_attempts = row.attempts
     try:
         get_memory_instance().add(
-            messages=messages, user_id=mem0_user_id, metadata=metadata, **params
+            messages=messages,
+            user_id=mem0_user_id,
+            run_id=scope_run_id(metadata),
+            metadata=metadata,
+            **params,
         )
     except Exception as exc:  # noqa: BLE001 - every outcome is recorded per row
         _record_failure(session_factory, ingest_id, previous_attempts, exc)
