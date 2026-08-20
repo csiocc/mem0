@@ -12,6 +12,7 @@ from memory_scope import MemoryScope
 from models import MemoryImportSource
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from write_guard import InjectedInstructionError, reject_override_instructions
 
 
 class ImportConflict(ValueError):
@@ -136,6 +137,15 @@ def append_memories(
         if not text:
             failed += 1
             errors.append({"index": index, "code": "empty_memory"})
+            continue
+
+        # Imported files are untrusted input, so a line written to redirect a
+        # later reader is refused here rather than stored verbatim.
+        try:
+            reject_override_instructions(text)
+        except InjectedInstructionError:
+            failed += 1
+            errors.append({"index": index, "code": "injected_instructions"})
             continue
 
         digest = content_sha256(text)

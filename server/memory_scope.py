@@ -14,6 +14,7 @@ RESERVED_SCOPE_METADATA = frozenset(
         "source_ref",
         "source_sha256",
         "import_content_sha256",
+        "content_sha256",
     }
 )
 
