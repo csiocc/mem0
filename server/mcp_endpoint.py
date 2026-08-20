@@ -13,6 +13,7 @@ import logging
 import re
 import uuid
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -424,3 +425,61 @@ def finish_memory_import(import_id: str) -> dict[str, Any]:
         except ImportConflict as exc:
             raise ValueError(str(exc))
         return _import_response(source, state="completed")
+
+
+# The scoped read paths deliberately bind every query to one scope, so nothing
+# else can answer "which projects do I have memories for". Aggregating here
+# keeps that question inside this fork-only module.
+SCOPE_SCAN_LIMIT = 10_000
+
+
+def _payload_expired(payload: dict[str, Any], today: str) -> bool:
+    expires = payload.get("expiration_date")
+    return bool(expires) and str(expires) < today
+
+
+@mcp.tool()
+@_sanitize_upstream_errors
+def list_memory_scopes(include_expired: bool = False) -> dict[str, Any]:
+    """Summarise every scope the authenticated user has memories in.
+
+    Returns one entry per scope with its memory count and the counts per
+    metadata type, newest activity first. Only the caller's own memories are
+    scanned. Expired memories are excluded unless include_expired is set.
+    """
+    today = datetime.now(tz=timezone.utc).date().isoformat()
+    rows = get_memory_instance().vector_store.list(
+        filters={"user_id": str(_user().id)}, top_k=SCOPE_SCAN_LIMIT
+    )
+    payloads = rows[0] if rows and isinstance(rows[0], list) else rows or []
+
+    scopes: dict[str, dict[str, Any]] = {}
+    for row in payloads:
+        payload = getattr(row, "payload", None) or {}
+        if not include_expired and _payload_expired(payload, today):
+            continue
+        key = str(payload.get("scope_key") or "")
+        if not key:
+            continue
+        entry = scopes.setdefault(
+            key,
+            {
+                "scope_key": key,
+                "scope": str(payload.get("scope") or ""),
+                "project_id": payload.get("project_id"),
+                "total_memories": 0,
+                "types": {},
+                "updated_at": None,
+            },
+        )
+        entry["total_memories"] += 1
+        kind = str(payload.get("type") or "") or "untyped"
+        entry["types"][kind] = entry["types"].get(kind, 0) + 1
+        stamp = payload.get("updated_at") or payload.get("created_at")
+        if stamp and (entry["updated_at"] is None or str(stamp) > str(entry["updated_at"])):
+            entry["updated_at"] = str(stamp)
+
+    ordered = sorted(
+        scopes.values(), key=lambda e: (e["updated_at"] or "", e["total_memories"]), reverse=True
+    )
+    return {"scopes": ordered, "scanned": len(payloads), "scan_limit": SCOPE_SCAN_LIMIT}

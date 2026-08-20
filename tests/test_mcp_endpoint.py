@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
+from types import SimpleNamespace
 
 pytest.importorskip("fastapi", reason="fastapi not installed")
 pytest.importorskip("mcp", reason="mcp sdk not installed")
@@ -168,6 +169,58 @@ def test_search_scopes_to_authenticated_user_and_wraps_untrusted(mcp_client):
         "OR": [{"scope_key": "global"}, {"scope_key": "project:occ"}],
     }
     assert kwargs["top_k"] == 100
+
+
+def _payload_row(scope_key, *, scope="project", project_id=None, kind=None, expires=None,
+                 updated="2026-08-01T00:00:00+00:00"):
+    payload = {"user_id": USER_A_ID, "scope_key": scope_key, "scope": scope,
+               "project_id": project_id, "updated_at": updated}
+    if kind:
+        payload["type"] = kind
+    if expires:
+        payload["expiration_date"] = expires
+    return SimpleNamespace(payload=payload)
+
+
+def test_list_memory_scopes_groups_by_scope_and_counts_types(mcp_client):
+    client, memory, _ = mcp_client
+    memory.vector_store.list.return_value = [[
+        _payload_row("project:occ", project_id="occ", kind="decision"),
+        _payload_row("project:occ", project_id="occ", kind="decision"),
+        _payload_row("project:occ", project_id="occ"),
+        _payload_row("global", scope="global", kind="user_preference",
+                     updated="2026-07-01T00:00:00+00:00"),
+    ]]
+
+    payload = tool_payload(tool_call(client, "list_memory_scopes", {}))
+
+    # Only the caller's own memories are scanned; no other scope filter exists
+    # on this path, so the user filter is what enforces ownership.
+    _, kwargs = memory.vector_store.list.call_args
+    assert kwargs["filters"] == {"user_id": USER_A_ID}
+    project, global_scope = payload["scopes"]
+    assert project["scope_key"] == "project:occ"
+    assert project["total_memories"] == 3
+    assert project["types"] == {"decision": 2, "untyped": 1}
+    assert global_scope["scope_key"] == "global"
+    assert global_scope["total_memories"] == 1
+
+
+def test_list_memory_scopes_hides_expired_unless_asked(mcp_client):
+    client, memory, _ = mcp_client
+    memory.vector_store.list.return_value = [[
+        _payload_row("project:occ", project_id="occ", kind="session_state",
+                     expires="2020-01-01"),
+        _payload_row("project:occ", project_id="occ", kind="decision"),
+    ]]
+
+    default = tool_payload(tool_call(client, "list_memory_scopes", {}))
+    including = tool_payload(tool_call(client, "list_memory_scopes", {"include_expired": True}))
+
+    # Expired memories are invisible to every search, so counting them by
+    # default would report a store larger than what retrieval can reach.
+    assert default["scopes"][0]["total_memories"] == 1
+    assert including["scopes"][0]["total_memories"] == 2
 
 
 def test_search_rejects_bad_slug_regardless_of_scope_casing(mcp_client):
@@ -480,7 +533,7 @@ def test_session_manager_is_stateless(mcp_client):
     assert mcp_endpoint.mcp.session_manager.stateless is True
 
 
-def test_tools_list_exposes_exactly_nine_tools_without_user_id(mcp_client):
+def test_tools_list_exposes_exactly_ten_tools_without_user_id(mcp_client):
     client, _, _ = mcp_client
     response = rpc(client, "tools/list", {}, id=3)
     tools = response.json()["result"]["tools"]
@@ -493,6 +546,7 @@ def test_tools_list_exposes_exactly_nine_tools_without_user_id(mcp_client):
         "finish_memory_import",
         "get_memories",
         "get_memory",
+        "list_memory_scopes",
         "search_memories",
         "update_memory",
     ]
